@@ -21,12 +21,12 @@ class ContainerPool:
     a replacement is spawned in the background.
     """
 
-    def __init__(self, pool_size: int = 8, image: str = "sre-server:latest"):
+    def __init__(self, pool_size: int = 8, image: str = "sre-sandbox:latest"):
         """Initialize container pool.
 
         Args:
             pool_size: Number of pre-warmed containers (default: 8)
-            image: Docker image name (default: "sre-server:latest")
+            image: Docker image name (default: "sre-sandbox:latest")
         """
         self.pool_size = pool_size
         self.image = image

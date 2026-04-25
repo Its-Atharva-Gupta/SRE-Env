@@ -1,0 +1,13 @@
+# Python-generated files
+__pycache__/
+openenv_SRE_Env.egg.info/
+.env
+*.py[oc]
+build/
+dist/
+wheels/
+.pytest_cache/
+*.egg-info
+
+# Virtual environments
+.venv

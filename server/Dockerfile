@@ -4,64 +4,81 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# SRE Environment Docker image
-# Sandbox for agent to SSH into and debug faults
+# OpenEnv FastAPI Server for SRE Terminal Agent RL Environment
+# Deploys the orchestration server that manages episodes and containers
+# Compatible with Hugging Face Spaces deployment
 
-FROM ubuntu:22.04
+ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
+FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-server \
-    nginx \
-    curl \
-    net-tools \
-    procps \
-    python3 \
-    util-linux \
-    && rm -rf /var/lib/apt/lists/*
+# Ensure git is available (required for installing dependencies from VCS)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
 
-# Create sre user with password 'fix123'
-RUN useradd -m -s /bin/bash sre && \
-    echo "sre:fix123" | chpasswd && \
-    usermod -aG sudo sre
+# Build argument to control whether we're building standalone or in-repo
+ARG BUILD_MODE=in-repo
 
-# Configure SSH
-RUN mkdir -p /var/run/sshd && \
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
-    sed -i 's/PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
+# Copy environment code (always at root of build context)
+COPY . /app/env
 
-# Create faults directory structure
-RUN mkdir -p /faults/inject /faults/verify
+# For in-repo builds, openenv is already vendored in the build context
+# For standalone builds, openenv will be installed via pyproject.toml
+WORKDIR /app/env
 
-# Copy fault injection scripts
-COPY faults/scripts/inject/ /faults/inject/
+# Ensure uv is available (for local builds where base image lacks it)
+RUN if ! command -v uv >/dev/null 2>&1; then \
+        curl -LsSf https://astral.sh/uv/install.sh | sh && \
+        mv /root/.local/bin/uv /usr/local/bin/uv && \
+        mv /root/.local/bin/uvx /usr/local/bin/uvx; \
+    fi
 
-# Create startup script
-RUN cat > /startup.sh << 'EOF'
-#!/bin/bash
-set -e
+# Install dependencies using uv sync
+# If uv.lock exists, use it; otherwise resolve on the fly
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -f uv.lock ]; then \
+        uv sync --frozen --no-install-project --no-editable; \
+    else \
+        uv sync --no-install-project --no-editable; \
+    fi
 
-# Start SSH
-/usr/sbin/sshd -D &
-SSH_PID=$!
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -f uv.lock ]; then \
+        uv sync --frozen --no-editable; \
+    else \
+        uv sync --no-editable; \
+    fi
 
-# Start nginx
-service nginx start || true
+# Final runtime stage
+FROM ${BASE_IMAGE}
 
-# Signal readiness
-touch /tmp/ready
+WORKDIR /app
 
-# Wait for SSH to exit
-wait $SSH_PID
-EOF
+# Install Docker CLI for container pool access
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        docker.io \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN chmod +x /startup.sh
+# Copy the virtual environment from builder
+COPY --from=builder /app/env/.venv /app/.venv
 
-# Expose SSH port
-EXPOSE 22
+# Copy the environment code
+COPY --from=builder /app/env /app/env
 
-# Run startup script
-CMD ["/startup.sh"]
+# Set PATH to use the virtual environment
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Set PYTHONPATH so imports work correctly
+ENV PYTHONPATH="/app/env:$PYTHONPATH"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the FastAPI server
+# The module path is constructed to work with the /app/env structure
+CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]

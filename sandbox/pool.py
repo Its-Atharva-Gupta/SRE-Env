@@ -4,13 +4,88 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Pre-warmed Docker container pool for instant episode resets."""
+"""Pre-warmed container pool for instant episode resets.
+
+Uses SandboxBackend abstraction to work with both local Docker and remote managers.
+"""
 
 import queue
 import threading
 import time
 
-import docker
+from .backends import get_backend
+
+
+class ContainersFactory:
+    """Factory for getting container proxies by ID.
+
+    Mimics the Docker client.containers interface.
+    """
+
+    def __init__(self, backend):
+        """Initialize factory.
+
+        Args:
+            backend: SandboxBackend instance
+        """
+        self.backend = backend
+
+    def get(self, container_id: str) -> "ContainerProxy":
+        """Get a container proxy by ID.
+
+        Args:
+            container_id: Container/sandbox ID
+
+        Returns:
+            ContainerProxy that can exec commands
+        """
+        return ContainerProxy(container_id, self.backend)
+
+
+class ClientCompat:
+    """Backward-compatible Docker client replacement.
+
+    Provides the same interface as docker.DockerClient.containers
+    for use in sre_environment.py.
+    """
+
+    def __init__(self, backend):
+        """Initialize compat client.
+
+        Args:
+            backend: SandboxBackend instance
+        """
+        self.containers = ContainersFactory(backend)
+
+
+class ContainerProxy:
+    """Proxy object that acts like a Docker container but uses the backend.
+
+    This allows sre_environment.py to work unchanged with both local Docker
+    and remote sandbox managers.
+    """
+
+    def __init__(self, container_id: str, backend):
+        """Initialize proxy.
+
+        Args:
+            container_id: Container/sandbox ID
+            backend: SandboxBackend instance
+        """
+        self.id = container_id
+        self.backend = backend
+
+    def exec_run(self, cmd: str, timeout: int = 10) -> tuple:
+        """Execute a command (same interface as Docker container).
+
+        Args:
+            cmd: Command to execute
+            timeout: Timeout in seconds
+
+        Returns:
+            (exit_code, output)
+        """
+        return self.backend.exec(self.id, cmd, timeout)
 
 
 class ContainerPool:
@@ -35,7 +110,7 @@ class ContainerPool:
         # Then set the rest
         self.pool_size = pool_size
         self.image = image
-        self.client = docker.from_env()
+        self.backend = get_backend()
         self._lock = threading.Lock()
 
         # Pre-warm the pool in background threads
@@ -45,40 +120,18 @@ class ContainerPool:
     def _spawn_container(self):
         """Spawn a single container and add to queue."""
         try:
-            # Start container
-            container = self.client.containers.run(
+            # Create container via backend
+            container_id, ssh_host, ssh_port = self.backend.create(
                 self.image,
-                detach=True,
-                tty=True,
-                ports={"22/tcp": None},  # Random host port
                 mem_limit="512m",
                 cpu_quota=50000,  # 0.5 CPU
                 network_mode="bridge",
                 remove=True,
             )
 
-            # Get assigned port
-            container.reload()
-            ssh_port = container.ports["22/tcp"][0]["HostPort"]
-
-            # Wait for SSH readiness
-            ready_time = 0
-            while ready_time < 15:
-                try:
-                    exit_code, _ = container.exec_run("test -f /tmp/ready")
-                    if exit_code == 0:
-                        # Container is ready
-                        self.container_queue.put((container, ssh_port), timeout=5)
-                        return
-                except Exception:
-                    pass
-
-                time.sleep(0.1)
-                ready_time += 0.1
-
-            # Timeout — kill and remove
-            container.kill()
-            raise TimeoutError(f"Container {container.id[:12]} failed to become ready")
+            # Wrap in proxy and add to queue
+            proxy = ContainerProxy(container_id, self.backend)
+            self.container_queue.put((proxy, ssh_port), timeout=5)
 
         except Exception as e:
             print(f"Failed to spawn container: {e}")
@@ -101,29 +154,29 @@ class ContainerPool:
         """Acquire a pre-warmed container from the pool.
 
         Returns:
-            (container, ssh_port): Docker container object and assigned SSH port
+            (container_proxy, ssh_port): ContainerProxy and assigned SSH port.
+            ContainerProxy has the same interface as a Docker container object.
 
         Raises:
             queue.Empty: If pool is exhausted (shouldn't happen with daemon threads)
         """
-        container, ssh_port = self.container_queue.get(timeout=30)
+        proxy, ssh_port = self.container_queue.get(timeout=30)
 
         # Spawn replacement in background
         self._refill_pool()
 
-        return container, ssh_port
+        return proxy, ssh_port
 
-    def release(self, container):
-        """Release a container (kill it).
+    def release(self, container_proxy) -> None:
+        """Release a container (destroy it).
 
         Does NOT return to pool — the pool refills itself via background threads.
-        Container is auto-removed due to remove=True in containers.run().
 
         Args:
-            container: Docker container to release
+            container_proxy: ContainerProxy to release
         """
         try:
-            container.kill()
+            self.backend.destroy(container_proxy.id)
         except Exception as e:
             print(f"Error releasing container: {e}")
 
@@ -133,16 +186,26 @@ class ContainerPool:
             self._shutdown_event.set()
 
         # Kill all containers currently in queue
-        if hasattr(self, 'container_queue'):
+        if hasattr(self, 'container_queue') and hasattr(self, 'backend'):
             while not self.container_queue.empty():
                 try:
-                    container, _ = self.container_queue.get_nowait()
+                    proxy, _ = self.container_queue.get_nowait()
                     try:
-                        container.kill()
+                        self.backend.destroy(proxy.id)
                     except Exception:
                         pass
                 except queue.Empty:
                     break
+
+    @property
+    def client(self):
+        """Provide backward-compatible Docker client interface.
+
+        This is accessed by sre_environment.py which calls
+        self.container_pool.client.containers.get(container_id).
+        We return a compatibility wrapper that provides the same interface.
+        """
+        return ClientCompat(self.backend)
 
     def __del__(self):
         """Cleanup on garbage collection."""

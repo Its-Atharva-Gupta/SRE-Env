@@ -18,14 +18,12 @@ dependencies = [
     # install from github
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
     "openenv-core[core]>=0.2.2",
-    # Environment-specific dependencies
-    # Add all dependencies needed for your environment here
-    # Examples:
-    # "numpy>=1.19.0",
-    # "torch>=2.0.0",
-    # "gymnasium>=0.29.0",
-    # "openspiel>=1.0.0",
-    # "smolagents>=1.22.0,<2",
+    # SRE environment-specific dependencies
+    "docker>=6.0.0",        # Docker SDK for Python (container pool management)
+    "paramiko>=3.0.0",      # SSH client (agent SSH sessions)
+    "fastapi>=0.100.0",     # FastAPI (sandbox manager server)
+    "uvicorn>=0.24.0",      # ASGI server (sandbox manager)
+    "requests>=2.31.0",     # HTTP client (remote sandbox manager)
 ]
 
 [project.optional-dependencies]
@@ -36,10 +34,17 @@ dev = [
 
 [project.scripts]
 # Server entry point - enables running via: uv run --project . server
-# or: python -m SRE_Env.server.app
-server = "SRE_Env.server.app:main"
+server = "server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["SRE_Env", "SRE_Env.server"]
-package-dir = { "SRE_Env" = ".", "SRE_Env.server" = "server" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "__pycache__*", "*.egg-info*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

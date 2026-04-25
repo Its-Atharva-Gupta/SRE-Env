@@ -28,16 +28,19 @@ class ContainerPool:
             pool_size: Number of pre-warmed containers (default: 8)
             image: Docker image name (default: "sre-sandbox:latest")
         """
+        # Initialize critical attributes first (needed by __del__ if init fails)
+        self._shutdown_event = threading.Event()
+        self.container_queue = queue.Queue(maxsize=pool_size)
+
+        # Then set the rest
         self.pool_size = pool_size
         self.image = image
-        self.container_queue = queue.Queue(maxsize=pool_size)
         self.client = docker.from_env()
-        self._shutdown_event = threading.Event()
         self._lock = threading.Lock()
 
-        # Pre-warm the pool
+        # Pre-warm the pool in background threads
         for _ in range(pool_size):
-            self._spawn_container()
+            threading.Thread(target=self._spawn_container, daemon=True).start()
 
     def _spawn_container(self):
         """Spawn a single container and add to queue."""
@@ -62,7 +65,7 @@ class ContainerPool:
             ready_time = 0
             while ready_time < 15:
                 try:
-                    _, exit_code = container.exec_run("test -f /tmp/ready")
+                    exit_code, _ = container.exec_run("test -f /tmp/ready")
                     if exit_code == 0:
                         # Container is ready
                         self.container_queue.put((container, ssh_port), timeout=5)
@@ -111,33 +114,35 @@ class ContainerPool:
         return container, ssh_port
 
     def release(self, container):
-        """Release a container (kill and remove it).
+        """Release a container (kill it).
 
         Does NOT return to pool — the pool refills itself via background threads.
+        Container is auto-removed due to remove=True in containers.run().
 
         Args:
             container: Docker container to release
         """
         try:
             container.kill()
-            container.remove()
         except Exception as e:
             print(f"Error releasing container: {e}")
 
     def shutdown(self):
         """Shutdown pool and kill all containers."""
-        self._shutdown_event.set()
+        if hasattr(self, '_shutdown_event'):
+            self._shutdown_event.set()
 
         # Kill all containers currently in queue
-        while not self.container_queue.empty():
-            try:
-                container, _ = self.container_queue.get_nowait()
+        if hasattr(self, 'container_queue'):
+            while not self.container_queue.empty():
                 try:
-                    container.kill()
-                except Exception:
-                    pass
-            except queue.Empty:
-                break
+                    container, _ = self.container_queue.get_nowait()
+                    try:
+                        container.kill()
+                    except Exception:
+                        pass
+                except queue.Empty:
+                    break
 
     def __del__(self):
         """Cleanup on garbage collection."""

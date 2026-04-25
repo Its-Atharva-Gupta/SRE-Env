@@ -11,24 +11,39 @@ LLM agent acts as SRE: SSH into broken Linux server, diagnose and fix faults.
 Reward based on verified system state restoration, not model output text.
 """
 
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
+# Handle imports for both Docker (PYTHONPATH=/app/env) and local execution
 try:
-    from ..faults.registry import FaultRegistry
-    from ..models import SREAction, SREObservation
-    from ..reward.engine import RewardEngine
-    from ..sandbox.pool import ContainerPool
-    from ..sandbox.ssh import SSHSession
-except ImportError:
     from faults.registry import FaultRegistry
     from models import SREAction, SREObservation
     from reward.engine import RewardEngine
     from sandbox.pool import ContainerPool
     from sandbox.ssh import SSHSession
+except (ImportError, ModuleNotFoundError):
+    # Try relative imports (when run as a package)
+    try:
+        from ..faults.registry import FaultRegistry
+        from ..models import SREAction, SREObservation
+        from ..reward.engine import RewardEngine
+        from ..sandbox.pool import ContainerPool
+        from ..sandbox.ssh import SSHSession
+    except (ImportError, ModuleNotFoundError):
+        # Add parent directory to path and retry
+        parent_dir = str(Path(__file__).parent.parent)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        from faults.registry import FaultRegistry
+        from models import SREAction, SREObservation
+        from reward.engine import RewardEngine
+        from sandbox.pool import ContainerPool
+        from sandbox.ssh import SSHSession
 
 
 @dataclass
@@ -152,35 +167,28 @@ class SREEnvironment(Environment):
                 {"error": "invalid_command"},
             )
 
-        # Handle interactive commands (return error without running)
-        interactive = ["vim", "nano", "emacs", "less", "more"]
-        if any(cmd in action.command for cmd in interactive):
-            return (
-                SREObservation(
-                    terminal_output=f"ERROR: Interactive command '{action.command}' not allowed",
-                    step=self.current_state.step,
-                    steps_remaining=self.reward_engine.max_steps - self.current_state.step,
-                    alert=self.current_state.alert,
-                ),
-                -0.5,
-                False,
-                {"interactive_command": True},
-            )
-
-        # Execute command via SSH
-        try:
-            output, exit_code = self.ssh_session.run(action.command, timeout=10)
-        except Exception as e:
-            output = f"SSH ERROR: {str(e)}"
-            exit_code = 1
-
         # Get container for reward computation
         container = self.container_pool.client.containers.get(
             self.current_state.container_id
         )
 
-        # Compute reward
-        fault_spec = FaultRegistry.get(self.current_state.fault_id)
+        # Check for interactive commands (penalized but not executed)
+        interactive = ["\\bvim\\b", "\\bnano\\b", "\\bemacs\\b", "\\bless\\b", "\\bmore\\b"]
+        import re
+        is_interactive = any(re.search(pattern, action.command) for pattern in interactive)
+
+        if is_interactive:
+            output = f"ERROR: Interactive command not allowed"
+            exit_code = 1
+        else:
+            # Execute command via SSH
+            try:
+                output, exit_code = self.ssh_session.run(action.command, timeout=10)
+            except Exception as e:
+                output = f"SSH ERROR: {str(e)}"
+                exit_code = 1
+
+        # Compute reward (engine handles penalties for interactive commands)
         reward, done, info = self.reward_engine.step(action.command, container)
 
         # Update state

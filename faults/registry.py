@@ -226,7 +226,7 @@ LOG_PERMISSIONS = FaultSpec(
     functional_check={
         "cmd": "curl -s http://localhost/ > /tmp/test.html && test -f /var/log/nginx/access.log && grep -q 'GET' /var/log/nginx/access.log",
         "expected_exit": 0,
-        "output_validator": lambda out: len(out) >= 0,
+        "output_validator": lambda out: True,
     },
     max_steps=8,
 )
@@ -283,7 +283,7 @@ DISK_FULL = FaultSpec(
         ),
     ],
     process_checks=[
-        ("df /var/log | awk 'NR==2 {print $5}' | grep -qE '^[0-8][0-9]|^9[0-9]' || exit 0", "disk usage still high"),
+        ("df /var/log | awk 'NR==2 {print $5+0}' | awk '{if($1>85) exit 1; else exit 0}'", "disk usage still high"),
     ],
     integrity_checks=[
         ("test -d /var/log", "/var/log directory missing"),
@@ -323,7 +323,7 @@ BROKEN_SYMLINK = FaultSpec(
     functional_check={
         "cmd": "python3 -c 'print(\"ok\")'",
         "expected_exit": 0,
-        "output_validator": lambda out: "ok" in out,
+        "output_validator": lambda out: "ok" in (out.decode(errors="replace") if isinstance(out, bytes) else out),
     },
     max_steps=8,
 )
@@ -350,7 +350,7 @@ ZOMBIE_PROCESS = FaultSpec(
         ("ps aux | grep -c 'Z' | awk '{if($1<=2) exit 0; else exit 1}'", "too many zombie processes"),
     ],
     integrity_checks=[
-        ("ps aux | grep -q 'Z'", "zombie processes still present"),
+        ("! ps aux | grep -qP '\bZ\b'", "zombie processes still present"),
     ],
     functional_check={
         "cmd": "echo test",
@@ -370,7 +370,7 @@ BAD_CRON = FaultSpec(
         Stage(
             name="cron_syntax_valid",
             weight=0.5,
-            check_cmd="crontab -l 2>&1 | grep -qv 'bad syntax' && exit 0 || exit 1",
+            check_cmd="! crontab -l 2>&1 | grep -q 'bad syntax'",
         ),
         Stage(
             name="system_responsive",
@@ -382,12 +382,12 @@ BAD_CRON = FaultSpec(
         ("pgrep cron > /dev/null || pgrep crond > /dev/null", "cron daemon not running"),
     ],
     integrity_checks=[
-        ("crontab -l 2>&1 | grep -q 'bad syntax' || exit 0", "cron still has bad syntax"),
+        ("! crontab -l 2>&1 | grep -q 'bad syntax'", "cron still has bad syntax"),
     ],
     functional_check={
         "cmd": "echo test",
         "expected_exit": 0,
-        "output_validator": lambda out: "test" in out,
+        "output_validator": lambda out: "test" in (out.decode(errors="replace") if isinstance(out, bytes) else out),
     },
     max_steps=8,
 )

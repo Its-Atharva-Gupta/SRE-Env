@@ -106,13 +106,15 @@ class Verifier:
             return False, "layer3: no functional check defined"
 
         try:
-            exit_code, output = self.container.exec_run(cmd, timeout=5)
+            exit_code, output = self.container.exec_run(cmd)
 
             # Check exit code
             if exit_code != expected_exit:
                 return False, f"layer3 failed: exit code {exit_code} != {expected_exit}"
 
-            # Check output validator
+            # Check output validator (handle both bytes and str)
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
             if not output_validator(output):
                 return False, "layer3 failed: output validation failed"
 

@@ -44,7 +44,7 @@ class SREObservation(Observation):
     prompt: str = Field(
         default="[sre@prod-01 ~]$", description="Shell prompt line (e.g. [sre@prod-01 ~]$)"
     )
-    step: int = Field(default=0, description="Current step number (1-indexed)")
+    step: int = Field(default=0, description="Current step number (0-indexed)")
     steps_remaining: int = Field(default=8, description="Steps remaining in episode")
     health_score: float = Field(
         default=0.0, description="System health score from 0.0 to 1.0"

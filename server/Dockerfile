@@ -13,11 +13,6 @@ FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /app
 
-# Ensure git is available (required for installing dependencies from VCS)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
-    rm -rf /var/lib/apt/lists/*
-
 # Build argument to control whether we're building standalone or in-repo
 ARG BUILD_MODE=in-repo
 
@@ -56,11 +51,9 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Install Docker CLI for container pool access
+# Install curl for health checks
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        docker.io \
-        curl && \
+    apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the virtual environment from builder
@@ -74,6 +67,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # Set PYTHONPATH so imports work correctly
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
+
+# Set sandbox mode to HF Spaces (subprocess-based, no Docker daemon)
+ENV SANDBOX_MODE=hf
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

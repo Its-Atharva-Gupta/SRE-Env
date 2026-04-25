@@ -1587,8 +1587,10 @@ name = "openenv-sre-env"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "docker" },
     { name = "fastapi" },
     { name = "openenv-core", extra = ["core"] },
+    { name = "paramiko" },
     { name = "pydantic" },
     { name = "uvicorn" },
 ]
@@ -1609,9 +1611,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "docker", specifier = ">=6.0.0" },
     { name = "docker", marker = "extra == 'local'", specifier = ">=6.0.0" },
     { name = "fastapi", specifier = ">=0.100.0" },
     { name = "openenv-core", extras = ["core"], specifier = ">=0.2.2" },
+    { name = "paramiko", specifier = ">3.0.0" },
     { name = "paramiko", marker = "extra == 'local'", specifier = ">=3.0.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },

@@ -10,6 +10,7 @@ import queue
 import re
 import threading
 import time
+from pathlib import Path
 
 import docker
 import paramiko
@@ -107,9 +108,44 @@ class ContainerPool:
         self.client = docker.from_env()
         self._lock = threading.Lock()
 
+        # Build the sandbox image if it doesn't already exist
+        self._ensure_image()
+
         # Pre-warm the pool in background threads
         for _ in range(pool_size):
             threading.Thread(target=self._spawn_container, daemon=True).start()
+
+    def _ensure_image(self) -> None:
+        """Build the sandbox image from sandbox/Dockerfile if not already present."""
+        try:
+            self.client.images.get(self.image)
+            return  # image already exists
+        except docker.errors.ImageNotFound:
+            pass
+
+        # Locate Dockerfile and build context (project root, one level above sandbox/)
+        sandbox_dir = Path(__file__).parent
+        dockerfile = sandbox_dir / "Dockerfile"
+        build_context = sandbox_dir.parent  # project root — needed for COPY faults/scripts/inject/
+
+        if not dockerfile.exists():
+            raise FileNotFoundError(
+                f"sandbox/Dockerfile not found at {dockerfile}. "
+                "Cannot build the sre-sandbox image automatically."
+            )
+
+        print(f"[ContainerPool] Image '{self.image}' not found — building from {dockerfile} …")
+        _, logs = self.client.images.build(
+            path=str(build_context),
+            dockerfile=str(dockerfile),
+            tag=self.image,
+            rm=True,
+        )
+        for chunk in logs:
+            line = chunk.get("stream", "").rstrip()
+            if line:
+                print(f"[build] {line}")
+        print(f"[ContainerPool] Image '{self.image}' built successfully.")
 
     def _spawn_container(self):
         """Spawn a single container and add to queue."""
@@ -224,9 +260,14 @@ class DockerSandbox:
 
     def __init__(self):
         """Initialize Docker sandbox."""
-        self.pool = ContainerPool(pool_size=8, image="sre-sandbox:latest")
+        self.pool = None  # Lazy-initialized on first reset()
         self.container = None
         self.ssh_session = None
+
+    def _ensure_pool(self):
+        """Lazily initialize container pool on first use."""
+        if self.pool is None:
+            self.pool = ContainerPool(pool_size=8, image="sre-sandbox:latest")
 
     def reset(self, fault_id: str) -> tuple:
         """Reset to healthy state and inject fault.
@@ -237,6 +278,9 @@ class DockerSandbox:
         Returns:
             (output, ssh_port): Diagnostic output and SSH port for agent
         """
+        # Lazily initialize pool on first use
+        self._ensure_pool()
+
         # Clean up previous episode
         if self.ssh_session:
             self.ssh_session.close()
@@ -244,14 +288,14 @@ class DockerSandbox:
         # Acquire fresh container
         self.container, ssh_port = self.pool.acquire()
 
-        # Inject fault
-        inject_cmd = f"bash /sre_env/scripts/inject/{fault_id}.sh"
+        # Inject fault (scripts live at /faults/inject/ inside the sandbox image)
+        inject_cmd = f"bash /faults/inject/{fault_id}.sh"
         self.container.exec_run(inject_cmd)
         time.sleep(0.5)
 
-        # Create SSH session
+        # Create SSH session (use 127.0.0.1 to avoid IPv6 resolution of "localhost")
         self.ssh_session = SSHSession(
-            host="localhost", port=ssh_port, user="sre", password="fix123"
+            host="127.0.0.1", port=ssh_port, user="sre", password="fix123"
         )
 
         # Run diagnostic suite
@@ -278,5 +322,5 @@ class DockerSandbox:
         """Release resources (called at end of episode)."""
         if self.ssh_session:
             self.ssh_session.close()
-        if self.container:
+        if self.container and self.pool:
             self.pool.release(self.container)

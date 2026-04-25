@@ -221,7 +221,7 @@ LOG_PERMISSIONS = FaultSpec(
     ],
     integrity_checks=[
         ("test -r /var/log/nginx", "nginx log directory not readable"),
-        ("stat -c '%a' /var/log/nginx | grep -q '^7'", "nginx log directory has wrong permissions"),
+        ("stat -c '%a' /var/log/nginx | grep -qE '^[67]55$'", "nginx log directory has wrong permissions"),
     ],
     functional_check={
         "cmd": "curl -s http://localhost/ > /tmp/test.html && test -f /var/log/nginx/access.log && grep -q 'GET' /var/log/nginx/access.log",
@@ -274,7 +274,7 @@ DISK_FULL = FaultSpec(
         Stage(
             name="disk_available",
             weight=0.5,
-            check_cmd="df /var/log | awk 'NR==2 {print $5}' | grep -qE '^[0-8][0-9]|^9[0-9]' && exit 1 || exit 0",
+            check_cmd="df /var/log | awk 'NR==2 {gsub(/%/,\"\",$5); if($5<85) exit 0; else exit 1}'",
         ),
         Stage(
             name="nginx_running",
@@ -283,7 +283,7 @@ DISK_FULL = FaultSpec(
         ),
     ],
     process_checks=[
-        ("df /var/log | awk 'NR==2 {print $5+0}' | awk '{if($1>85) exit 1; else exit 0}'", "disk usage still high"),
+        ("df /var/log | awk 'NR==2 {gsub(/%/,\"\",$5); if($5>85) exit 1; else exit 0}'", "disk usage still high"),
     ],
     integrity_checks=[
         ("test -d /var/log", "/var/log directory missing"),
@@ -338,7 +338,7 @@ ZOMBIE_PROCESS = FaultSpec(
         Stage(
             name="zombie_count",
             weight=0.6,
-            check_cmd="ps aux | grep -c 'Z' | awk '{if($1<=2) exit 0; else exit 1}'",
+            check_cmd="ps aux | awk '$8==\"Z\"{c++} END{if(c+0==0) exit 0; else exit 1}'",
         ),
         Stage(
             name="system_responsive",
@@ -347,10 +347,10 @@ ZOMBIE_PROCESS = FaultSpec(
         ),
     ],
     process_checks=[
-        ("ps aux | grep -c 'Z' | awk '{if($1<=2) exit 0; else exit 1}'", "too many zombie processes"),
+        ("ps aux | awk '$8==\"Z\"{c++} END{if(c+0==0) exit 0; else exit 1}'", "too many zombie processes"),
     ],
     integrity_checks=[
-        ("! ps aux | grep -qP '\bZ\b'", "zombie processes still present"),
+        ("ps aux | awk '$8==\"Z\"{found=1} END{if(found) exit 1; else exit 0}'", "zombie processes still present"),
     ],
     functional_check={
         "cmd": "echo test",
@@ -412,7 +412,7 @@ MULTI_FAULT = FaultSpec(
         Stage(
             name="disk_available",
             weight=0.3,
-            check_cmd="df /var/log | awk 'NR==2 {print $5}' | grep -qE '^[0-8][0-9]|^9[0-9]' && exit 1 || exit 0",
+            check_cmd="df /var/log | awk 'NR==2 {gsub(/%/,\"\",$5); if($5<85) exit 0; else exit 1}'",
         ),
     ],
     process_checks=[

@@ -131,30 +131,28 @@ class SREEnvironment(Environment):
             alert=fault_spec.alert,
         )
 
-    def step(self, action: SREAction) -> Tuple[SREObservation, float, bool, Dict]:
+    def step(self, action: SREAction) -> SREObservation:
         """Execute one step (one command).
 
         Args:
             action: SREAction with command string
 
         Returns:
-            (observation, reward, done, info)
+            SREObservation with reward/done/info embedded in reward, done, metadata fields
         """
         if not self.current_state or not self.reward_engine:
             raise RuntimeError("Environment not initialized; call reset() first")
 
         # Validate command
         if not action.command or "\n" in action.command:
-            return (
-                SREObservation(
-                    terminal_output="ERROR: Invalid command",
-                    step=self.current_state.step,
-                    steps_remaining=self.reward_engine.max_steps - self.current_state.step,
-                    alert=self.current_state.alert,
-                ),
-                -0.5,
-                True,
-                {"error": "invalid_command"},
+            return SREObservation(
+                terminal_output="ERROR: Invalid command",
+                step=self.current_state.step,
+                steps_remaining=self.reward_engine.max_steps - self.current_state.step,
+                alert=self.current_state.alert,
+                reward=-0.5,
+                done=True,
+                metadata={"error": "invalid_command"},
             )
 
         # Execute command via sandbox (same interface in both modes)
@@ -165,9 +163,7 @@ class SREEnvironment(Environment):
         # In HF mode: pass None (reward system will use subprocess)
         container = None
         if self.mode == "local":
-            # In local mode, we might need the container for verification
-            # But for now, let reward engine handle it based on mode
-            pass
+            container = self.sandbox.container
 
         reward, done, info = self.reward_engine.step(action.command, container)
 
@@ -178,7 +174,7 @@ class SREEnvironment(Environment):
         # Format output as terminal
         formatted_output = output + "\n[sre@prod-01 ~]$"
 
-        # Create observation
+        # Create observation — embed reward/done/info so OpenEnv can serialize it
         obs = SREObservation(
             terminal_output=formatted_output,
             prompt="[sre@prod-01 ~]$",
@@ -186,6 +182,9 @@ class SREEnvironment(Environment):
             steps_remaining=max(0, fault_spec.max_steps - self.current_state.step),
             health_score=info.get("health_score", 0.0),
             alert=self.current_state.alert,
+            reward=reward,
+            done=done,
+            metadata=info,
         )
 
         # Clean up if done
@@ -193,7 +192,7 @@ class SREEnvironment(Environment):
             if self.mode == "local":
                 self.sandbox.release()
 
-        return obs, reward, done, info
+        return obs
 
     def close(self):
         """Close environment and clean up resources."""

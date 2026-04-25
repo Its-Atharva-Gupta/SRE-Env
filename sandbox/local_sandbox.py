@@ -29,7 +29,7 @@ class LocalSandbox:
         """
         # Restore healthy state
         subprocess.run(
-            ["bash", "/sre_env/scripts/restore.sh"],
+            ["bash", "/app/env/faults/scripts/restore.sh"],
             capture_output=True,
             timeout=30,
             check=False,
@@ -38,7 +38,7 @@ class LocalSandbox:
 
         # Inject fault
         subprocess.run(
-            ["bash", f"/sre_env/scripts/inject/{fault_id}.sh"],
+            ["bash", f"/app/env/faults/scripts/inject/{fault_id}.sh"],
             capture_output=True,
             timeout=30,
             check=False,
@@ -52,7 +52,7 @@ class LocalSandbox:
         return output
 
     def exec(self, command: str, timeout: int = 10) -> tuple:
-        """Execute a command as sre user.
+        """Execute a command.
 
         Args:
             command: Shell command to run
@@ -68,7 +68,8 @@ class LocalSandbox:
 
         try:
             result = subprocess.run(
-                ["sudo", "-u", "sre", "bash", "-c", command],
+                command,
+                shell=True,
                 capture_output=True,
                 text=True,
                 timeout=timeout,

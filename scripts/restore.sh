@@ -15,8 +15,9 @@ cp /etc/nginx/sites-enabled/default.bak /etc/nginx/sites-enabled/default 2>/dev/
 chmod 755 /var/log/nginx/ 2>/dev/null || true
 chown -R www-data:www-data /var/log/nginx/ 2>/dev/null || true
 
-# Clean up disk space
+# Clean up disk space (covers both inject script filenames)
 find /var/log/ -name "fill.log" -delete 2>/dev/null || true
+find /var/log/ -name "dummy.img" -delete 2>/dev/null || true
 find /tmp/ -name "test_write.bin" -delete 2>/dev/null || true
 
 # Fix symlinks

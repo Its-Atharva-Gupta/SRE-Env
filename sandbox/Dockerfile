@@ -25,17 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     util-linux \
     cron \
-    crontabs \
-    systemctl \
     sudo \
     vim-tiny \
     less \
     grep \
     sed \
-    awk \
     gawk \
     jq \
-    dmesg \
     && rm -rf /var/lib/apt/lists/*
 
 # Create sre user with password 'fix123' and sudo access

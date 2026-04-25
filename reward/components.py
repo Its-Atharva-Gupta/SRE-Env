@@ -96,7 +96,7 @@ def penalty(command: str, prev_command: str) -> Tuple[float, bool]:
 
     # Interactive commands: penalty but don't end episode
     INTERACTIVE = ["vim", "nano", "emacs", "less", "more"]
-    if any(i in command for i in INTERACTIVE):
+    if any(re.search(rf"\b{i}\b", command) for i in INTERACTIVE):
         return reward_delta - 0.5, False
 
     # Repeat command penalty

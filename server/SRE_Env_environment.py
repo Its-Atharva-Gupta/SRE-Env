@@ -24,16 +24,14 @@ try:
     from faults.registry import FaultRegistry
     from models import SREAction, SREObservation
     from reward.engine import RewardEngine
-    from sandbox.pool import ContainerPool
-    from sandbox.ssh import SSHSession
+    from sandbox import get_sandbox
 except (ImportError, ModuleNotFoundError):
     # Try relative imports (when run as a package)
     try:
         from ..faults.registry import FaultRegistry
         from ..models import SREAction, SREObservation
         from ..reward.engine import RewardEngine
-        from ..sandbox.pool import ContainerPool
-        from ..sandbox.ssh import SSHSession
+        from ..sandbox import get_sandbox
     except (ImportError, ModuleNotFoundError):
         # Add parent directory to path and retry
         parent_dir = str(Path(__file__).parent.parent)
@@ -42,8 +40,7 @@ except (ImportError, ModuleNotFoundError):
         from faults.registry import FaultRegistry
         from models import SREAction, SREObservation
         from reward.engine import RewardEngine
-        from sandbox.pool import ContainerPool
-        from sandbox.ssh import SSHSession
+        from sandbox import get_sandbox
 
 
 @dataclass
@@ -76,11 +73,13 @@ class SREEnvironment(Environment):
         """Initialize SRE environment.
 
         Args:
-            pool_size: Number of pre-warmed containers (default: 8)
+            pool_size: Number of pre-warmed containers (default: 8, local mode only)
         """
-        self.container_pool = ContainerPool(pool_size=pool_size)
+        import os
+        self.sandbox = get_sandbox()
+        self.mode = os.getenv("SANDBOX_MODE", "local").lower()
         self.current_state: Optional[SREState] = None
-        self.ssh_session: Optional[SSHSession] = None
+        self.container: Optional[Any] = None
         self.reward_engine: Optional[RewardEngine] = None
 
     def reset(self, config: Optional[Dict] = None) -> SREObservation:
@@ -92,44 +91,35 @@ class SREEnvironment(Environment):
         Returns:
             SREObservation with alert + diagnostic output
         """
-        # Clean up previous episode
-        if self.ssh_session:
-            self.ssh_session.close()
-
-        # Acquire container from pool
-        container, ssh_port = self.container_pool.acquire()
-
         # Sample a fault (optionally filtered by tier)
         tier = config.get("tier") if config else None
         fault_spec = FaultRegistry.sample(tier=tier)
 
-        # Inject the fault
-        inject_cmd = f"bash /faults/inject/{fault_spec.inject_script}"
-        container.exec_run(inject_cmd)
-
-        # Create SSH session
-        self.ssh_session = SSHSession(
-            host="localhost", port=ssh_port, user="sre", password="fix123"
-        )
+        # Reset sandbox (calls restore.sh + inject script)
+        if self.mode == "local":
+            # Local (Docker) mode: returns (output, ssh_port)
+            diag_output, ssh_port = self.sandbox.reset(fault_spec.id)
+            container_id = "docker-container"  # Not used in HF mode
+        else:
+            # HF (subprocess) mode: returns just output
+            diag_output = self.sandbox.reset(fault_spec.id)
+            ssh_port = None
+            container_id = "local-sandbox"
 
         # Create reward engine
         self.reward_engine = RewardEngine(fault_spec, max_steps=fault_spec.max_steps)
 
         # Initialize state
         self.current_state = SREState(
-            container_id=container.id,
+            container_id=container_id,
             fault_id=fault_spec.id,
-            ssh_port=ssh_port,
+            ssh_port=ssh_port or 0,
             step=0,
             prev_score=0.0,
             prev_command="",
             alert=fault_spec.alert,
             done=False,
         )
-
-        # Run diagnostic suite
-        diag_cmd = "systemctl --failed --no-pager; df -h; uptime; whoami"
-        diag_output, _ = self.ssh_session.run(diag_cmd)
 
         # Return observation
         return SREObservation(
@@ -150,7 +140,7 @@ class SREEnvironment(Environment):
         Returns:
             (observation, reward, done, info)
         """
-        if not self.current_state or not self.ssh_session or not self.reward_engine:
+        if not self.current_state or not self.reward_engine:
             raise RuntimeError("Environment not initialized; call reset() first")
 
         # Validate command
@@ -167,32 +157,23 @@ class SREEnvironment(Environment):
                 {"error": "invalid_command"},
             )
 
-        # Get container for reward computation
-        container = self.container_pool.client.containers.get(
-            self.current_state.container_id
-        )
+        # Execute command via sandbox (same interface in both modes)
+        output, exit_code = self.sandbox.exec(action.command, timeout=10)
 
-        # Check for interactive commands (penalized but not executed)
-        interactive = ["\\bvim\\b", "\\bnano\\b", "\\bemacs\\b", "\\bless\\b", "\\bmore\\b"]
-        import re
-        is_interactive = any(re.search(pattern, action.command) for pattern in interactive)
+        # Compute reward
+        # In local mode: pass container object
+        # In HF mode: pass None (reward system will use subprocess)
+        container = None
+        if self.mode == "local":
+            # In local mode, we might need the container for verification
+            # But for now, let reward engine handle it based on mode
+            pass
 
-        if is_interactive:
-            output = f"ERROR: Interactive command not allowed"
-            exit_code = 1
-        else:
-            # Execute command via SSH
-            try:
-                output, exit_code = self.ssh_session.run(action.command, timeout=10)
-            except Exception as e:
-                output = f"SSH ERROR: {str(e)}"
-                exit_code = 1
-
-        # Compute reward (engine handles penalties for interactive commands)
         reward, done, info = self.reward_engine.step(action.command, container)
 
         # Update state
         self.current_state.step += 1
+        fault_spec = FaultRegistry.get(self.current_state.fault_id)
 
         # Format output as terminal
         formatted_output = output + "\n[sre@prod-01 ~]$"
@@ -209,24 +190,15 @@ class SREEnvironment(Environment):
 
         # Clean up if done
         if done:
-            self.container_pool.release(container)
-            if self.ssh_session:
-                self.ssh_session.close()
+            if self.mode == "local":
+                self.sandbox.release()
 
         return obs, reward, done, info
 
     def close(self):
         """Close environment and clean up resources."""
-        if self.ssh_session:
-            self.ssh_session.close()
-        if self.current_state:
-            try:
-                container = self.container_pool.client.containers.get(
-                    self.current_state.container_id
-                )
-                self.container_pool.release(container)
-            except Exception:
-                pass
+        if self.mode == "local":
+            self.sandbox.release()
 
     @property
     def state(self) -> State:

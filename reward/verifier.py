@@ -6,7 +6,9 @@
 
 """Three-layer terminal verification for fault recovery."""
 
-from typing import Any, Tuple
+import os
+import subprocess
+from typing import Any, Optional, Tuple
 
 from faults.registry import FaultSpec
 
@@ -14,19 +16,22 @@ from faults.registry import FaultSpec
 class Verifier:
     """Three-layer verification of system state recovery.
 
-    Only runs when health_score >= 1.0. Ensures the fix is legitimate
-    and the system is actually functional (not just superficially healthy).
+    Only runs when health_score >= 1.0. Works in both modes:
+    - Local (Docker): Uses container.exec_run()
+    - HF (subprocess): Uses subprocess
     """
 
-    def __init__(self, container: Any, fault_spec: FaultSpec):
+    def __init__(self, container: Optional[Any], fault_spec: FaultSpec):
         """Initialize verifier.
 
         Args:
-            container: Docker container object with exec_run method
+            container: Docker container object with exec_run method (local mode).
+                      None in HF mode.
             fault_spec: FaultSpec with verification requirements
         """
         self.container = container
         self.fault_spec = fault_spec
+        self.mode = os.getenv("SANDBOX_MODE", "local").lower()
 
     def verify(self) -> Tuple[bool, str]:
         """Run three-layer verification. Short-circuits on first failure.
@@ -59,7 +64,18 @@ class Verifier:
         """
         for cmd, failure_reason in self.fault_spec.process_checks:
             try:
-                exit_code, _ = self.container.exec_run(cmd)
+                if self.mode == "hf":
+                    result = subprocess.run(
+                        ["bash", "-c", cmd],
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    exit_code = result.returncode
+                else:
+                    if self.container is None:
+                        return False, "layer1 error: no container"
+                    exit_code, _ = self.container.exec_run(cmd)
+
                 if exit_code != 0:
                     return False, f"layer1 failed: {failure_reason}"
             except Exception as e:
@@ -80,7 +96,18 @@ class Verifier:
         """
         for cmd, failure_reason in self.fault_spec.integrity_checks:
             try:
-                exit_code, _ = self.container.exec_run(cmd)
+                if self.mode == "hf":
+                    result = subprocess.run(
+                        ["bash", "-c", cmd],
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    exit_code = result.returncode
+                else:
+                    if self.container is None:
+                        return False, "layer2 error: no container"
+                    exit_code, _ = self.container.exec_run(cmd)
+
                 if exit_code != 0:
                     return False, f"layer2 failed: {failure_reason}"
             except Exception as e:
@@ -106,19 +133,33 @@ class Verifier:
             return False, "layer3: no functional check defined"
 
         try:
-            exit_code, output = self.container.exec_run(cmd)
+            if self.mode == "hf":
+                result = subprocess.run(
+                    ["bash", "-c", cmd],
+                    capture_output=True,
+                    timeout=30,
+                )
+                exit_code = result.returncode
+                output = result.stdout.decode(errors="replace")
+            else:
+                if self.container is None:
+                    return False, "layer3 error: no container"
+                exit_code, output = self.container.exec_run(cmd)
+                # Handle bytes output from Docker
+                if isinstance(output, bytes):
+                    output = output.decode(errors="replace")
 
             # Check exit code
             if exit_code != expected_exit:
                 return False, f"layer3 failed: exit code {exit_code} != {expected_exit}"
 
-            # Check output validator (handle both bytes and str)
-            if isinstance(output, bytes):
-                output = output.decode(errors="replace")
+            # Check output validator
             if not output_validator(output):
                 return False, "layer3 failed: output validation failed"
 
         except TimeoutError:
+            return False, "layer3 failed: timeout (curl/write took too long)"
+        except subprocess.TimeoutExpired:
             return False, "layer3 failed: timeout (curl/write took too long)"
         except Exception as e:
             return False, f"layer3 error: {str(e)}"

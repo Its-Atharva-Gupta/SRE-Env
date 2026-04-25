@@ -15,21 +15,21 @@ description = "Sre Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
-    # install from github
-    # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
     "openenv-core[core]>=0.2.2",
-    # SRE environment-specific dependencies
-    "docker>=6.0.0",        # Docker SDK for Python (container pool management)
-    "paramiko>=3.0.0",      # SSH client (agent SSH sessions)
-    "fastapi>=0.100.0",     # FastAPI (sandbox manager server)
-    "uvicorn>=0.24.0",      # ASGI server (sandbox manager)
-    "requests>=2.31.0",     # HTTP client (remote sandbox manager)
+    # SRE environment core dependencies
+    "fastapi>=0.100.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
+# Local (desktop) mode with Docker
+local = [
+    "docker>=6.0.0",        # Docker SDK for Python (container pool management)
+    "paramiko>=3.0.0",      # SSH client (agent SSH sessions)
+]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
+    "pytest>=9.0.3",
 ]
 
 [project.scripts]

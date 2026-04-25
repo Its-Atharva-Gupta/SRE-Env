@@ -28,6 +28,9 @@ Usage:
     python -m server.app
 """
 
+import sys
+from pathlib import Path
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -35,12 +38,22 @@ except Exception as e:  # pragma: no cover
         "openenv is required for the web interface. Install dependencies with 'uv sync'"
     ) from e
 
+# Handle imports for both Docker (PYTHONPATH=/app/env) and local execution
 try:
-    from ..models import SREAction, SREObservation
-    from .SRE_Env_environment import SREEnvironment
-except ModuleNotFoundError:
     from models import SREAction, SREObservation
     from server.SRE_Env_environment import SREEnvironment
+except (ModuleNotFoundError, ImportError):
+    # Try relative imports (when run as a package)
+    try:
+        from ..models import SREAction, SREObservation
+        from .SRE_Env_environment import SREEnvironment
+    except (ModuleNotFoundError, ImportError):
+        # Add parent directory to path and retry
+        parent_dir = str(Path(__file__).parent.parent)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        from models import SREAction, SREObservation
+        from server.SRE_Env_environment import SREEnvironment
 
 
 # Create the app with web interface and README integration

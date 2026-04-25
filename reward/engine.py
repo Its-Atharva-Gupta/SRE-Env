@@ -69,8 +69,13 @@ class RewardEngine:
                 "steps": self.steps,
             }
 
-        # Step 2: Score health
-        health_score, passing_stages = HealthScorer.score(container, self.fault_spec)
+        # Step 2: Score health (pass container in local mode, None in hf mode)
+        import os
+        mode = os.getenv("SANDBOX_MODE", "local").lower()
+        if mode == "hf":
+            health_score, passing_stages = HealthScorer.score(None, self.fault_spec)
+        else:
+            health_score, passing_stages = HealthScorer.score(container, self.fault_spec)
 
         # Step 3: Progress reward
         r_progress = progress_reward(self.prev_score, health_score)

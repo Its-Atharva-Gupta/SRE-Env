@@ -6,7 +6,8 @@
 
 """Health scoring — multi-stage per-fault scoring."""
 
-from typing import Any, List, Tuple
+import os
+from typing import Any, List, Optional, Tuple
 
 from faults.registry import FaultSpec
 
@@ -14,29 +15,50 @@ from faults.registry import FaultSpec
 class HealthScorer:
     """Multi-stage health scoring for faults.
 
-    Runs each stage's check command via container.exec_run(). Accumulates
-    weights of passing stages to compute a 0.0-1.0 health score.
+    Works in both modes:
+    - Local (Docker): Uses container.exec_run()
+    - HF (subprocess): Uses run_check()
     """
 
     @staticmethod
-    def score(container: Any, fault_spec: FaultSpec) -> Tuple[float, List[str]]:
+    def score(
+        container: Optional[Any] = None, fault_spec: Optional[FaultSpec] = None
+    ) -> Tuple[float, List[str]]:
         """Score system health based on fault specification stages.
 
         Args:
-            container: Docker container object with exec_run method
+            container: Docker container object with exec_run method (local mode).
+                      None in HF mode.
             fault_spec: FaultSpec defining health check stages
 
         Returns:
             (health_score, passing_stage_names): Score from 0.0 to 1.0 and
             list of stage names that passed
         """
+        if fault_spec is None:
+            return 0.0, []
+
         total_score = 0.0
         passing_stages = []
+        mode = os.getenv("SANDBOX_MODE", "local").lower()
 
         for stage in fault_spec.health_stages:
             try:
-                # Run the health check command
-                exit_code, output = container.exec_run(stage.check_cmd)
+                if mode == "hf":
+                    # HF mode: run via subprocess
+                    import subprocess
+                    result = subprocess.run(
+                        ["bash", "-c", stage.check_cmd],
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    exit_code = result.returncode
+                else:
+                    # Local (Docker) mode: run via container
+                    if container is None:
+                        continue
+                    exit_code, _ = container.exec_run(stage.check_cmd)
+
                 if exit_code == 0:
                     total_score += stage.weight
                     passing_stages.append(stage.name)

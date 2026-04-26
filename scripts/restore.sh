@@ -1,41 +1,71 @@
 #!/bin/bash
-# Exhaustively restore to healthy state — undo all possible faults
+# restore.sh — return system to healthy state before each episode
+# Must be idempotent. Must be bulletproof. Exit 0 always.
 
 set -e
 
-# Kill any lingering processes that might interfere
+echo "[restore] starting system restore"
+
+# ── Kill any runaway processes from previous episode ────────────────────────
 pkill -f "fill.log" 2>/dev/null || true
-pkill -f "zombie" 2>/dev/null || true
+pkill -f "fork_bomb" 2>/dev/null || true
 
-# Restore nginx config
-cp /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf 2>/dev/null || true
-cp /etc/nginx/sites-enabled/default.bak /etc/nginx/sites-enabled/default 2>/dev/null || true
+# ── Remove any injected junk files ──────────────────────────────────────────
+rm -f /var/log/fill.log
+rm -f /tmp/zombie.pid
 
-# Fix permissions
-chmod 755 /var/log/nginx/ 2>/dev/null || true
-chown -R www-data:www-data /var/log/nginx/ 2>/dev/null || true
+# ── Restore nginx config from backup ────────────────────────────────────────
+if [ -f /etc/nginx/nginx.conf.bak ]; then
+    cp /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf
+else
+    echo "[restore] WARNING: nginx.conf.bak not found — skipping config restore"
+fi
 
-# Clean up disk space (covers both inject script filenames)
-find /var/log/ -name "fill.log" -delete 2>/dev/null || true
-find /var/log/ -name "dummy.img" -delete 2>/dev/null || true
-find /tmp/ -name "test_write.bin" -delete 2>/dev/null || true
+# ── Restore nginx sites-enabled ─────────────────────────────────────────────
+if [ -f /etc/nginx/sites-enabled/default.bak ]; then
+    cp /etc/nginx/sites-enabled/default.bak /etc/nginx/sites-enabled/default
+fi
 
-# Fix symlinks
-ln -sf /usr/bin/python3.10 /usr/bin/python3 2>/dev/null || true
+# ── Restore index.html ──────────────────────────────────────────────────────
+mkdir -p /var/www/html
+if [ ! -f /var/www/html/index.html ]; then
+    echo "<!DOCTYPE html><html><body>OK</body></html>" > /var/www/html/index.html
+    chown www-data:www-data /var/www/html/index.html 2>/dev/null || true
+fi
 
-# Kill lingering processes from restarts
-kill $(cat /tmp/zombie.pid 2>/dev/null) 2>/dev/null || true
-rm -f /tmp/zombie.pid 2>/dev/null || true
+# ── Restore log directory permissions ───────────────────────────────────────
+mkdir -p /var/log/nginx/
+chmod 755 /var/log/nginx/
+chown -R www-data:adm /var/log/nginx/ 2>/dev/null || \
+    chown -R www-data /var/log/nginx/ 2>/dev/null || true
 
-# Clear bad cron entries
-(crontab -r 2>/dev/null || true)
+# ── Restore python3 symlink ──────────────────────────────────────────────────
+if [ -f /tmp/python3_orig_target.txt ]; then
+    ORIG=$(cat /tmp/python3_orig_target.txt)
+    ln -sf "$ORIG" /usr/bin/python3 2>/dev/null || true
+    rm -f /tmp/python3_orig_target.txt
+else
+    for v in 3.12 3.11 3.10 3.9 3.8; do
+        if [ -f "/usr/bin/python${v}" ]; then
+            ln -sf "/usr/bin/python${v}" /usr/bin/python3 2>/dev/null || true
+            break
+        fi
+    done
+fi
 
-# Restart services cleanly
-systemctl restart nginx 2>/dev/null || true
-systemctl restart ssh 2>/dev/null || true
+# ── Restart nginx cleanly ────────────────────────────────────────────────────
+service nginx stop 2>/dev/null || true
+sleep 0.3
+service nginx start 2>/dev/null || nginx 2>/dev/null || true
+sleep 0.5
 
-# Give services time to start
-sleep 1
+# ── Verify nginx is up ───────────────────────────────────────────────────────
+if service nginx status >/dev/null 2>&1; then
+    echo "[restore] nginx: running OK"
+else
+    echo "[restore] WARNING: nginx failed to start after restore"
+    nginx -t 2>/dev/null && nginx 2>/dev/null || true
+fi
 
-# Signal readiness
-touch /tmp/ready
+echo "[restore] done"
+exit 0

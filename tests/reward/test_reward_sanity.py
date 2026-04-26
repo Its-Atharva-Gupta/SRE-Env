@@ -1,10 +1,7 @@
 """
 Sanity check: verify reward ordering across four policy archetypes.
 
-Supports two sandbox modes (set via SANDBOX_MODE env var):
-  local  (default) — Docker containers via DockerSandbox; image is built
-                     automatically if sre-sandbox:latest doesn't exist.
-  hf               — subprocess on the current host; nginx must be installed.
+Requires nginx installed on the host and scripts/restore.sh + scripts/inject/ present.
 
 Policies tested:
   optimal        -- diagnostic sequence then targeted fix
@@ -16,7 +13,6 @@ Key assertion: optimal > wrong_harmless > random_spam > destructive
 
 Exit 0 on success, 1 on any ordering violation.
 """
-import os
 import subprocess
 import sys
 import time
@@ -25,15 +21,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-MODE = os.getenv("SANDBOX_MODE", "local").lower()
-
 from faults.registry import FaultRegistry  # noqa: E402
 from reward.engine import RewardEngine  # noqa: E402
 
 FAULT_ID = "broken_nginx_config"
 
-# Commands that must never run on the real host.
-# The reward engine detects them from the string alone — no exec needed.
 _NEVER_EXEC = frozenset([
     "rm -rf /",
     "rm -rf /*",
@@ -65,14 +57,8 @@ POLICIES: dict[str, list[str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Unified sandbox abstraction
-# ---------------------------------------------------------------------------
-
-class _HFSandbox:
-    """Subprocess-based sandbox (no Docker). Requires nginx on the host."""
-
-    container = None  # no Docker container in this mode
+class _Sandbox:
+    """Subprocess sandbox. Requires nginx on the host."""
 
     def _find_script(self, kind: str, name: str = "") -> Path:
         if kind == "restore":
@@ -82,6 +68,8 @@ class _HFSandbox:
             ]
         else:
             candidates = [
+                Path(f"/app/env/scripts/inject/{name}.sh"),
+                PROJECT_ROOT / "scripts" / "inject" / f"{name}.sh",
                 Path(f"/app/env/faults/scripts/inject/{name}.sh"),
                 PROJECT_ROOT / "faults" / "scripts" / "inject" / f"{name}.sh",
             ]
@@ -119,45 +107,13 @@ class _HFSandbox:
         pass
 
 
-class _DockerSandbox:
-    """Docker container sandbox. Image is auto-built if missing."""
-
-    def __init__(self):
-        from sandbox.docker_sandbox import DockerSandbox
-        self._sandbox = DockerSandbox()
-
-    @property
-    def container(self):
-        return self._sandbox.container
-
-    def reset(self, fault_id: str) -> str:
-        output, _ = self._sandbox.reset(fault_id)
-        return output
-
-    def exec(self, command: str, timeout: int = 60) -> tuple[str, int]:
-        return self._sandbox.exec(command, timeout)
-
-    def release(self) -> None:
-        self._sandbox.release()
-
-
-def _make_sandbox():
-    if MODE == "hf":
-        return _HFSandbox()
-    return _DockerSandbox()
-
-
-# ---------------------------------------------------------------------------
-# Policy runner
-# ---------------------------------------------------------------------------
-
 StepDetail = tuple[str, float, float, list[str]]
 
 
 def run_policy(name: str, commands: list[str]) -> tuple[float, list[StepDetail]]:
     """Reset the fault, run each command through the reward engine, return results."""
     fault_spec = FaultRegistry.get(FAULT_ID)
-    sandbox = _make_sandbox()
+    sandbox = _Sandbox()
     sandbox.reset(FAULT_ID)
     engine = RewardEngine(fault_spec, max_steps=fault_spec.max_steps)
 
@@ -165,12 +121,10 @@ def run_policy(name: str, commands: list[str]) -> tuple[float, list[StepDetail]]
     steps: list[StepDetail] = []
 
     for cmd in commands:
-        # Never execute host-destroying commands.
-        # RewardEngine.penalty() detects them from the string and short-circuits.
         if not any(d in cmd for d in _NEVER_EXEC):
             sandbox.exec(cmd, timeout=60)
 
-        reward, done, info = engine.step(cmd, sandbox.container)
+        reward, done, info = engine.step(cmd)
         total += reward
 
         health = info.get("health_score", 0.0)
@@ -184,12 +138,7 @@ def run_policy(name: str, commands: list[str]) -> tuple[float, list[StepDetail]]
     return total, steps
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> int:
-    print(f"Mode: SANDBOX_MODE={MODE}")
     print(f"Fault: {FAULT_ID}\n")
 
     totals: dict[str, float] = {}
@@ -206,9 +155,6 @@ def main() -> int:
             print(f"  {cmd:<45} r={r:+.3f}  health={h:.2f}  stages={stages}")
         print(f"  TOTAL: {total:+.3f}\n")
 
-    # ------------------------------------------------------------------
-    # Ordering assertions (the only hard failures)
-    # ------------------------------------------------------------------
     print("=== ORDERING ASSERTIONS ===")
     ordering_checks = [
         ("optimal > wrong_harmless", totals["optimal"], totals["wrong_harmless"]),
@@ -226,7 +172,6 @@ def main() -> int:
             failures.append(label)
         print()
 
-    # Informational range hints
     print("\n=== RANGE HINTS (informational) ===")
     hints = [
         ("optimal",        "expected ≥ 2.5",        totals["optimal"] >= 2.5),

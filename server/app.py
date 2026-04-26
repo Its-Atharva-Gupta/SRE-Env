@@ -62,7 +62,7 @@ app = create_app(
     SREAction,
     SREObservation,
     env_name="sre-terminal-agent",
-    max_concurrent_envs=1,  # increase for more concurrent WebSocket sessions
+    max_concurrent_envs=32,
 )
 
 

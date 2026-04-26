@@ -14,28 +14,28 @@ version = "0.1.0"
 description = "Sre Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
-    # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     "openenv-core[core]>=0.2.2",
-    # SRE environment core dependencies
     "fastapi>=0.100.0",
     "uvicorn>=0.24.0",
     "pydantic>=2.0",
-    "docker>=6.0.0",
-    "paramiko>3.0.0",
+    "requests",
+    "psutil",
 ]
 
 [project.optional-dependencies]
-# Local (desktop) mode with Docker
-local = [
-    "docker>=6.0.0",        # Docker SDK for Python (container pool management)
-    "paramiko>=3.0.0",      # SSH client (agent SSH sessions)
+train = [
+    "unsloth",
+    "trl>=0.29.0",
+    "accelerate",
+    "datasets",
+    "wandb",
 ]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio",
 ]
 
 [project.scripts]
-# Server entry point - enables running via: uv run --project . server
 server = "server.app:main"
 
 [tool.setuptools]

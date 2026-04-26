@@ -12,7 +12,7 @@ from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
 from openenv.core.env_server.types import State
 
-from .models import SREAction, SREObservation
+from models import SREAction, SREObservation
 
 
 class SREEnv(EnvClient[SREAction, SREObservation, State]):
@@ -50,6 +50,22 @@ class SREEnv(EnvClient[SREAction, SREObservation, State]):
         ... finally:
         ...     client.close()
     """
+
+    async def reset(self, **kwargs):
+        """
+        Force reconnect before every reset.
+        Server closes WebSocket on done=True — _ws is stale but not None,
+        so _ensure_connected() skips reconnect. We must null it out manually.
+        """
+        # Null out the stale websocket so _ensure_connected reconnects
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None  # force _ensure_connected to reconnect
+
+        return await super().reset(**kwargs)    
 
     def _step_payload(self, action: SREAction) -> Dict:
         """Convert SREAction to JSON payload for step message.

@@ -2,17 +2,13 @@
 Variance check: verify the reward function produces sufficient spread for GRPO.
 
 Runs 50 episodes with a random policy across all registered faults.
-
-Supports two sandbox modes (set via SANDBOX_MODE env var):
-  local  (default) — Docker containers; image is auto-built if missing.
-  hf               — subprocess on the current host; nginx must be installed.
+Requires nginx installed on the host.
 
 A standard deviation below 0.5 means all policies score similarly, which
 collapses GRPO's relative-advantage signal — there is nothing to learn from.
 
 Exit 0 if stdev > 0.5, exit 1 otherwise.
 """
-import os
 import random
 import statistics
 import subprocess
@@ -22,8 +18,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
-
-MODE = os.getenv("SANDBOX_MODE", "local").lower()
 
 from faults.registry import FaultRegistry  # noqa: E402
 from reward.engine import RewardEngine  # noqa: E402
@@ -45,13 +39,7 @@ RANDOM_COMMANDS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Unified sandbox abstraction (mirrors test_reward_sanity.py)
-# ---------------------------------------------------------------------------
-
-class _HFSandbox:
-    container = None
-
+class _Sandbox:
     def _find_script(self, kind: str, name: str = "") -> Path:
         if kind == "restore":
             candidates = [
@@ -60,6 +48,8 @@ class _HFSandbox:
             ]
         else:
             candidates = [
+                Path(f"/app/env/scripts/inject/{name}.sh"),
+                PROJECT_ROOT / "scripts" / "inject" / f"{name}.sh",
                 Path(f"/app/env/faults/scripts/inject/{name}.sh"),
                 PROJECT_ROOT / "faults" / "scripts" / "inject" / f"{name}.sh",
             ]
@@ -92,37 +82,7 @@ class _HFSandbox:
         pass
 
 
-class _DockerSandbox:
-    def __init__(self):
-        from sandbox.docker_sandbox import DockerSandbox
-        self._sandbox = DockerSandbox()
-
-    @property
-    def container(self):
-        return self._sandbox.container
-
-    def reset(self, fault_id: str) -> str:
-        output, _ = self._sandbox.reset(fault_id)
-        return output
-
-    def exec(self, command: str, timeout: int = 15) -> tuple[str, int]:
-        return self._sandbox.exec(command, timeout)
-
-    def release(self) -> None:
-        self._sandbox.release()
-
-
-def _make_sandbox():
-    if MODE == "hf":
-        return _HFSandbox()
-    return _DockerSandbox()
-
-
-# ---------------------------------------------------------------------------
-# Episode runner
-# ---------------------------------------------------------------------------
-
-def run_episode(fault_id: str, sandbox) -> float:
+def run_episode(fault_id: str, sandbox: _Sandbox) -> float:
     """Run one episode with a random command policy. Returns total reward."""
     fault_spec = FaultRegistry.get(fault_id)
     sandbox.reset(fault_id)
@@ -132,17 +92,13 @@ def run_episode(fault_id: str, sandbox) -> float:
     for _ in range(MAX_STEPS):
         cmd = random.choice(RANDOM_COMMANDS)
         sandbox.exec(cmd, timeout=15)
-        reward, done, _ = engine.step(cmd, sandbox.container)
+        reward, done, _ = engine.step(cmd)
         total += reward
         if done:
             break
 
     return total
 
-
-# ---------------------------------------------------------------------------
-# Histogram helper
-# ---------------------------------------------------------------------------
 
 def _histogram(values: list[float]) -> dict[str, int]:
     buckets: dict[str, int] = {"<-1": 0, "-1to0": 0, "0to1": 0, "1to2": 0, ">2": 0}
@@ -160,13 +116,7 @@ def _histogram(values: list[float]) -> dict[str, int]:
     return buckets
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main() -> int:
-    print(f"Mode: SANDBOX_MODE={MODE}")
-
     fault_ids = FaultRegistry.all_ids()
     if not fault_ids:
         print("FAIL: no faults registered in FaultRegistry.")
@@ -174,10 +124,8 @@ def main() -> int:
 
     print(f"Running {EPISODES} episodes across {len(fault_ids)} faults …\n")
 
-    # One sandbox instance is reused across all episodes (pool refills automatically
-    # in Docker mode after each release).
     try:
-        sandbox = _make_sandbox()
+        sandbox = _Sandbox()
     except Exception as e:
         print(f"ERROR creating sandbox: {e}")
         return 1

@@ -65,7 +65,8 @@ class SREEnv(EnvClient[SREAction, SREObservation, State]):
                 pass
             self._ws = None  # force _ensure_connected to reconnect
 
-        return await super().reset(**kwargs)    
+        result = await super().reset(**kwargs)
+        return result.observation    
 
     def _step_payload(self, action: SREAction) -> Dict:
         """Convert SREAction to JSON payload for step message.
